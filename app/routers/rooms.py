@@ -29,33 +29,35 @@ class RoomsPostCommentRequest(BaseModel):
     nickname: str | None = None
     whisper: bool = False
 
-# ★ f-stringを使わず、後で置換する
-_HTML_TEMPLATE = """
+# HTMLテンプレ（__USER__ を置換）
+_HTML = """
 <html>
   <head>
     <meta charset="utf-8" />
     <title>__USER__'s room</title>
     <style>
-      body { font-family: sans-serif; max-width: 680px; margin: 24px auto; }
-      #comments p { margin: 6px 0; }
-      .status { font-size: 12px; color: #666; }
-      .tag { font-size: 10px; padding: 2px 6px; border-radius: 6px; background: #eee; margin-left: 6px; }
+      body{ font-family: system-ui, sans-serif; max-width:760px; margin:24px auto; }
+      h1{ margin-bottom:8px; }
+      .status{ font-size:12px; color:#666; }
+      #avatarWrap{ margin:12px 0; }
+      #avatar{ width:200px; height:200px; object-fit:contain; }
+      .tag{ font-size:10px; padding:2px 6px; border-radius:6px; background:#eee; margin-left:6px; }
     </style>
   </head>
   <body>
     <h1>__USER__'s room <span id="wsState" class="status">(connecting...)</span></h1>
 
+    <div id="avatarWrap">
+      <img id="avatar" src="/static/avatars/active.png" alt="avatar">
+      <div class="status">presence: <span id="presenceText" class="tag">active</span></div>
+    </div>
+
     <form id="form">
-      <input name="nickname" placeholder="Nickname" style="width: 140px;">
-      <input name="comment" placeholder="Comment" style="width: 360px;">
-      <label style="margin-left:8px;"><input type="checkbox" name="whisper"> whisper</label>
+      <input name="nickname" placeholder="Nickname" />
+      <input name="comment" placeholder="Comment" style="width:300px;" />
+      <label><input type="checkbox" name="whisper" /> whisper</label>
       <button type="submit">Send</button>
     </form>
-
-    <div style="margin-top:8px;">
-      <span class="status">presence: </span>
-      <span id="presenceText" class="tag">unknown</span>
-    </div>
 
     <h3>Comments</h3>
     <div id="comments"></div>
@@ -66,67 +68,67 @@ _HTML_TEMPLATE = """
       const form = document.getElementById('form');
       const presenceText = document.getElementById('presenceText');
       const wsState = document.getElementById('wsState');
+      const avatar = document.getElementById('avatar');
 
-      // 初回はRESTで履歴を取得
-      async function fetchComments() {
+      const avatarImgs = {
+        active: "/static/avatars/active.png",
+        idle: "/static/avatars/idle.png",
+        sleep: "/static/avatars/sleep.png"
+      };
+
+      // 履歴取得
+      async function fetchComments(){
         const res = await fetch("/rooms/__USER__/comments");
         const data = await res.json();
         commentsDiv.innerHTML = "";
-        for (const c of data.items) {
-          const p = document.createElement("p");
+        for(const c of data.items){
           const who = c.nickname || "匿名";
           const tag = c.whisper ? '<span class="tag">whisper</span>' : '';
+          const p = document.createElement("p");
           p.innerHTML = `<b>${who}:</b> ${c.text} ${tag}`;
           commentsDiv.appendChild(p);
         }
       }
 
-      // WebSocket接続（http/https判定でws/wssを出し分け）
+      // WS接続
       const scheme = location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(`${scheme}://${location.host}/rooms/__USER__/ws`);
+      ws.addEventListener("open", ()=> wsState.textContent="(online)");
+      ws.addEventListener("close", ()=> wsState.textContent="(offline)");
 
-      ws.addEventListener("open", () => { wsState.textContent = "(online)"; });
-      ws.addEventListener("close", () => { wsState.textContent = "(offline)"; });
-
-      ws.addEventListener("message", (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "comment") {
+      ws.addEventListener("message", (ev)=>{
+        const msg = JSON.parse(ev.data);
+        if(msg.type==="comment"){
           const p = document.createElement("p");
           const who = msg.nickname || "匿名";
           const tag = msg.whisper ? '<span class="tag">whisper</span>' : '';
           p.innerHTML = `<b>${who}:</b> ${msg.text} ${tag}`;
           commentsDiv.appendChild(p);
-          p.scrollIntoView({ block: "end" });
-        } else if (msg.type === "presence") {
-          presenceText.textContent = msg.status;
+          p.scrollIntoView({block:"end"});
+        }else if(msg.type==="presence"){
+          setPresence(msg.status);
         }
       });
 
-      // 入力送信 → WSで即配信（保存はサーバ側）
-      form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const fd = new FormData(form);
-        const nickname = fd.get('nickname') || "";
-        const text = (fd.get('comment') || "").trim();
-        const whisper = !!fd.get('whisper');
-        if (!text) return;
-        ws.send(JSON.stringify({ type: "comment", nickname, text, whisper }));
-        form.reset();
-      });
-
-      // presence（アクティビティ）送信
+      // presence送信
       let lastActivity = Date.now();
-      function bump() { lastActivity = Date.now(); }
+      const bump = ()=> lastActivity = Date.now();
       document.addEventListener("mousemove", bump);
       document.addEventListener("keydown", bump);
 
-      setInterval(() => {
+      setInterval(()=>{
         const now = Date.now();
         let status = "active";
-        if (now - lastActivity > 1800000) status = "sleep";   // 30分
-        else if (now - lastActivity > 180000) status = "idle"; // 3分
-        ws.send(JSON.stringify({ type: "presence", status }));
+        if(now - lastActivity > 1800000) status = "sleep";
+        else if(now - lastActivity > 180000) status = "idle";
+        ws.send(JSON.stringify({ type:"presence", status }));
+        setPresence(status);
       }, 5000);
+
+      function setPresence(status){
+        presenceText.textContent = status;
+        avatar.src = avatarImgs[status] || avatarImgs["active"];
+      }
 
       fetchComments();
     </script>
@@ -136,8 +138,7 @@ _HTML_TEMPLATE = """
 
 @router.get("/{user_id}/page", response_class=HTMLResponse)
 def get_page(user_id: str):
-    html = _HTML_TEMPLATE.replace("__USER__", user_id)
-    return HTMLResponse(content=html)
+    return HTMLResponse(_HTML.replace("__USER__", user_id))
 
 @router.get("/{user_id}/comments")
 def get_comments(user_id: str):
@@ -165,11 +166,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         while True:
             data = await websocket.receive_json()
             t = data.get("type")
-
             if t == "comment":
-                text = (data.get("text") or "").trim() if hasattr(str, "trim") else (data.get("text") or "").strip()
-                if not text:
-                    continue
+                text = (data.get("text") or "").strip()
+                if not text: continue
                 item = {
                     "id": now_iso(),
                     "user_id": user_id,
@@ -179,12 +178,9 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                     "created_at": now_iso(),
                 }
                 save_comment(user_id, item)
-                await _broadcast(user_id, {"type": "comment", **item})
-
+                await _broadcast(user_id, {"type":"comment", **item})
             elif t == "presence":
                 status = data.get("status") or "active"
-                await _broadcast(user_id, {"type": "presence", "status": status, "at": now_iso()})
-
-            # 未知タイプは無視
+                await _broadcast(user_id, {"type":"presence","status":status,"at":now_iso()})
     except WebSocketDisconnect:
         await _ws_disconnect(user_id, websocket)
