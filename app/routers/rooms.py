@@ -62,76 +62,111 @@ _HTML = """
     <h3>Comments</h3>
     <div id="comments"></div>
 
-    <script>
-      const userId = "__USER__";
-      const commentsDiv = document.getElementById('comments');
-      const form = document.getElementById('form');
-      const presenceText = document.getElementById('presenceText');
-      const wsState = document.getElementById('wsState');
-      const avatar = document.getElementById('avatar');
+<script>
+  const userId = "__USER__";
+  const commentsDiv = document.getElementById('comments');
+  const form = document.getElementById('form');
+  const presenceText = document.getElementById('presenceText');
+  const wsState = document.getElementById('wsState');
+  const avatar = document.getElementById('avatar');
 
-      const avatarImgs = {
-        active: "/static/avatars/active.png",
-        idle: "/static/avatars/idle.png",
-        sleep: "/static/avatars/sleep.png"
-      };
+  const avatarImgs = {
+    active: "/static/avatars/active.png",
+    idle: "/static/avatars/idle.png",
+    sleep: "/static/avatars/sleep.png"
+  };
 
-      // 履歴取得
-      async function fetchComments(){
-        const res = await fetch("/rooms/__USER__/comments");
-        const data = await res.json();
-        commentsDiv.innerHTML = "";
-        for(const c of data.items){
-          const who = c.nickname || "匿名";
-          const tag = c.whisper ? '<span class="tag">whisper</span>' : '';
-          const p = document.createElement("p");
-          p.innerHTML = `<b>${who}:</b> ${c.text} ${tag}`;
-          commentsDiv.appendChild(p);
-        }
-      }
+  // 初回だけ履歴を出す（以降はWSで追記）
+  async function fetchComments(){
+    const res = await fetch("/rooms/__USER__/comments");
+    const data = await res.json();
+    commentsDiv.innerHTML = "";
+    for(const c of data.items){
+      const who = c.nickname || "匿名";
+      const tag = c.whisper ? '<span class="tag">whisper</span>' : '';
+      const p = document.createElement("p");
+      p.innerHTML = `<b>${who}:</b> ${c.text} ${tag}`;
+      commentsDiv.appendChild(p);
+    }
+  }
 
-      // WS接続
-      const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${scheme}://${location.host}/rooms/__USER__/ws`);
-      ws.addEventListener("open", ()=> wsState.textContent="(online)");
-      ws.addEventListener("close", ()=> wsState.textContent="(offline)");
+  // WebSocket接続
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${scheme}://${location.host}/rooms/__USER__/ws`);
 
-      ws.addEventListener("message", (ev)=>{
-        const msg = JSON.parse(ev.data);
-        if(msg.type==="comment"){
-          const p = document.createElement("p");
-          const who = msg.nickname || "匿名";
-          const tag = msg.whisper ? '<span class="tag">whisper</span>' : '';
-          p.innerHTML = `<b>${who}:</b> ${msg.text} ${tag}`;
-          commentsDiv.appendChild(p);
-          p.scrollIntoView({block:"end"});
-        }else if(msg.type==="presence"){
-          setPresence(msg.status);
-        }
+  ws.addEventListener("open", ()=> wsState.textContent="(online)");
+  ws.addEventListener("close", ()=> wsState.textContent="(offline)");
+
+  // 受信→即時反映
+  ws.addEventListener("message", (ev)=>{
+    const msg = JSON.parse(ev.data);
+    if(msg.type==="comment"){
+      appendComment(msg.nickname, msg.text, msg.whisper);
+    }else if(msg.type==="presence"){
+      setPresence(msg.status);
+    }
+  });
+
+  // 送信（WSが閉じていたらRESTフォールバック）
+  form.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const fd = new FormData(form);
+    const nickname = fd.get('nickname') || "";
+    const text = (fd.get('comment') || "").trim();
+    const whisper = !!fd.get('whisper');
+    if(!text) return;
+
+    const payload = { type:"comment", nickname, text, whisper };
+
+    if(ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify(payload));            // ← 即時配信
+    }else{
+      await fetch("/rooms/__USER__/comments", {    // ← 予備（まれにWS未接続時）
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ comment:text, nickname, whisper })
       });
+      // 自分の画面にも即時反映しておく
+      appendComment(nickname, text, whisper);
+    }
+    form.reset();
+  });
 
-      // presence送信
-      let lastActivity = Date.now();
-      const bump = ()=> lastActivity = Date.now();
-      document.addEventListener("mousemove", bump);
-      document.addEventListener("keydown", bump);
+  // コメント描画（共通）
+  function appendComment(nickname, text, whisper){
+    const p = document.createElement("p");
+    const who = nickname || "匿名";
+    const tag = whisper ? '<span class="tag">whisper</span>' : '';
+    p.innerHTML = `<b>${who}:</b> ${text} ${tag}`;
+    commentsDiv.appendChild(p);
+    p.scrollIntoView({ block:"end" });
+  }
 
-      setInterval(()=>{
-        const now = Date.now();
-        let status = "active";
-        if(now - lastActivity > 1800000) status = "sleep";
-        else if(now - lastActivity > 180000) status = "idle";
-        ws.send(JSON.stringify({ type:"presence", status }));
-        setPresence(status);
-      }, 5000);
+  // presence送信＋見た目反映
+  let lastActivity = Date.now();
+  const bump = ()=> lastActivity = Date.now();
+  document.addEventListener("mousemove", bump);
+  document.addEventListener("keydown", bump);
 
-      function setPresence(status){
-        presenceText.textContent = status;
-        avatar.src = avatarImgs[status] || avatarImgs["active"];
-      }
+  setInterval(()=>{
+    const now = Date.now();
+    let status = "active";
+    if(now - lastActivity > 1800000) status = "sleep";
+    else if(now - lastActivity > 180000) status = "idle";
+    if(ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify({ type:"presence", status }));
+    }
+    setPresence(status);
+  }, 5000);
 
-      fetchComments();
-    </script>
+  function setPresence(status){
+    presenceText.textContent = status;
+    avatar.src = avatarImgs[status] || avatarImgs.active;
+  }
+
+  fetchComments(); // 初期ログ
+</script>
+
   </body>
 </html>
 """
