@@ -17,7 +17,8 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # 静的ファイルの配信 (/static でアクセス可能にする)
 STATIC_DIR = Path(__file__).parent / "static"
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+(STATIC_DIR / "avatars").mkdir(parents=True, exist_ok=True)   # ← 追加：必ず作る
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")  # ← str() 推奨
 
 # CORS設定
 app.add_middleware(
