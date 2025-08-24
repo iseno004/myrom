@@ -184,3 +184,4 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 await _broadcast(user_id, {"type":"presence","status":status,"at":now_iso()})
     except WebSocketDisconnect:
         await _ws_disconnect(user_id, websocket)
+        
